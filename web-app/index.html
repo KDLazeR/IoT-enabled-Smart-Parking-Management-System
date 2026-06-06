@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Parking Dashboard</title>
+    <style>
+        /* CSS Variables - Warm, Relaxed, Sepia-Inspired Palette */
+        :root {
+            --bg-base: #fdf6e3;         
+            --bg-surface: #f4ead6;      
+            --text-main: #4a3f35;       
+            --text-muted: #796a5b;      
+            
+            --color-free: #7b9a6d;      
+            --color-occupied: #b85c50;  
+            --color-highlight: #d4a373;
+            
+            --shadow: 0 4px 12px rgba(74, 63, 53, 0.08);
+            --border-radius: 12px;
+            --transition-speed: 0.4s;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding-bottom: 40px;
+        }
+
+        /* Header & Counter */
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px 0;
+            border-bottom: 2px solid var(--bg-surface);
+        }
+
+        header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .counter-badge {
+            display: inline-block;
+            background-color: var(--text-main);
+            color: var(--bg-base);
+            padding: 8px 20px;
+            border-radius: 30px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+        }
+
+        h2 {
+            font-size: 1.3rem;
+            margin-bottom: 15px;
+            color: var(--text-main);
+        }
+
+        section {
+            margin-bottom: 40px;
+        }
+
+        /* Live Slot Monitor Grid */
+        .slot-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        /* Slot Cards */
+        .slot-card {
+            background-color: var(--bg-surface);
+            border-radius: var(--border-radius);
+            padding: 25px 20px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            transition: all var(--transition-speed) ease;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .slot-card h3 {
+            font-size: 2.2rem;
+        }
+
+        .slot-card .status {
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Customizable Driver Input inside Slot */
+        .driver-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid rgba(0,0,0,0.1);
+            border-radius: 6px;
+            background-color: rgba(255,255,255,0.8);
+            color: var(--text-main);
+            font-size: 0.95rem;
+            text-align: center;
+            outline: none;
+            display: none; /* Hidden by default, shows when occupied */
+        }
+        
+        .driver-input::placeholder {
+            color: #999;
+        }
+
+        /* Dynamic Status Colors */
+        .slot-card.free {
+            background-color: var(--color-free);
+            color: var(--bg-base);
+        }
+
+        .slot-card.occupied {
+            background-color: var(--color-occupied);
+            color: var(--bg-base);
+        }
+
+        .slot-card.occupied .driver-input {
+            display: block; /* Show input when someone is parked */
+        }
+
+        .slot-card.loading {
+            background-color: var(--bg-surface);
+            color: var(--text-muted);
+        }
+
+        /* Live Activity Feed */
+        .feed-container {
+            background-color: var(--bg-surface);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .feed-item {
+            background-color: var(--bg-base);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 5px solid var(--text-muted);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            animation: fadeIn 0.4s ease;
+        }
+
+        .feed-item.left {
+            border-left-color: var(--color-highlight);
+        }
+
+        .feed-item.parked {
+            border-left-color: var(--color-free);
+        }
+
+        .feed-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .feed-main {
+            font-size: 1.1rem;
+        }
+
+        .fee-highlight {
+            font-weight: bold;
+            color: var(--color-occupied);
+            font-size: 1.2rem;
+        }
+
+        .empty-feed {
+            text-align: center;
+            color: var(--text-muted);
+            font-style: italic;
+            padding: 20px;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Responsive Design */
+        @media (max-width: 600px) {
+            header h1 { font-size: 1.4rem; }
+            .counter-badge { font-size: 1rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>Smart Parking Management System</h1>
+            <div id="available-counter" class="counter-badge">Calculating Slots...</div>
+        </header>
+
+        <section>
+            <h2>Live Slot Map</h2>
+            <div class="slot-grid">
+                <div class="slot-card loading" id="card-A1">
+                    <h3>A1</h3>
+                    <div class="status" id="status-A1">Connecting...</div>
+                    <input type="text" id="name-A1" class="driver-input" placeholder="Tag: (e.g. UID or Plate)">
+                </div>
+                <div class="slot-card loading" id="card-A2">
+                    <h3>A2</h3>
+                    <div class="status" id="status-A2">Connecting...</div>
+                    <input type="text" id="name-A2" class="driver-input" placeholder="Tag: (e.g. UID or Plate)">
+                </div>
+                <div class="slot-card loading" id="card-A3">
+                    <h3>A3</h3>
+                    <div class="status" id="status-A3">Connecting...</div>
+                    <input type="text" id="name-A3" class="driver-input" placeholder="Tag: (e.g. UID or Plate)">
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Live Scan & Fee Activity</h2>
+            <div id="activity-feed" class="feed-container">
+                <div class="empty-feed">Waiting for scans...</div>
+            </div>
+        </section>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+        import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-database.js";
+
+        // ==========================================
+        // 1. FIREBASE CONFIGURATION
+        // ==========================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyAQ7aiMWt4rP33b9bt0CmzYb-0N6EFlBmw",
+            databaseURL: "https://smart-parking-system-69023-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "smart-parking-system-69023"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // ==========================================
+        // 2. LIVE SLOT MONITORING & CUSTOM NAMES
+        // ==========================================
+        const slots = ['A1', 'A2', 'A3'];
+        const slotsRef = ref(db, 'slots');
+        const namesRef = ref(db, 'slot_names');
+        
+        // Listen to physical slot statuses (Free/Occupied)
+        onValue(slotsRef, (snapshot) => {
+            const data = snapshot.val() || {};
+            let freeCount = 0;
+
+            slots.forEach(slotId => {
+                const status = data[slotId] || "Free";
+                const cardEl = document.getElementById('card-' + slotId);
+                const statusEl = document.getElementById('status-' + slotId);
+
+                statusEl.innerText = status;
+                cardEl.classList.remove('loading', 'free', 'occupied');
+                cardEl.classList.add(status.toLowerCase()); 
+                
+                if (status === "Free") {
+                    freeCount++;
+                    // Automatically clear the name input when the car leaves
+                    document.getElementById('name-' + slotId).value = "";
+                    set(ref(db, 'slot_names/' + slotId), ""); 
+                }
+            });
+
+            // Update Header Counter
+            document.getElementById('available-counter').innerText = `${freeCount} / 3 Slots Available`;
+        });
+
+        // Listen to and sync custom driver tags across devices
+        onValue(namesRef, (snapshot) => {
+            const names = snapshot.val() || {};
+            slots.forEach(slotId => {
+                // Only update if we aren't currently typing in it
+                const inputEl = document.getElementById('name-' + slotId);
+                if (document.activeElement !== inputEl) {
+                    inputEl.value = names[slotId] || "";
+                }
+            });
+        });
+
+        // Save typed name to Firebase when user clicks out of the text box
+        slots.forEach(slotId => {
+            document.getElementById('name-' + slotId).addEventListener('change', (e) => {
+                set(ref(db, 'slot_names/' + slotId), e.target.value);
+            });
+        });
+
+        // ==========================================
+        // 3. LIVE ACTIVITY & FEE FEED
+        // ==========================================
+        const usersRef = ref(db, 'users');
+        const feedEl = document.getElementById('activity-feed');
+
+        onValue(usersRef, (snapshot) => {
+            const users = snapshot.val() || {};
+            feedEl.innerHTML = ''; // Clear feed
+
+            let hasActivity = false;
+
+            // Loop through all users and build the feed
+            for (const [uid, data] of Object.entries(users)) {
+                if (data.status === "Left") {
+                    hasActivity = true;
+                    const dur = parseFloat(data.last_duration || 0).toFixed(1);
+                    const feeAmt = parseFloat(data.last_fee || 0).toFixed(2);
+                    
+                    // Add receipt card
+                    feedEl.innerHTML += `
+                        <div class="feed-item left">
+                            <div class="feed-header">
+                                <span>RFID: ${uid}</span>
+                                <span>Status: Exited</span>
+                            </div>
+                            <div class="feed-main">
+                                Parked for ${dur}s. <span class="fee-highlight">Final Fee: Rs. ${feeAmt}</span>
+                            </div>
+                        </div>`;
+                } 
+                else if (data.status === "Parked") {
+                    hasActivity = true;
+                    // Add parked notification card
+                    feedEl.innerHTML += `
+                        <div class="feed-item parked">
+                            <div class="feed-header">
+                                <span>RFID: ${uid}</span>
+                                <span>Status: Active</span>
+                            </div>
+                            <div class="feed-main">
+                                Vehicle is currently parked.
+                            </div>
+                        </div>`;
+                }
+            }
+
+            if (!hasActivity) {
+                feedEl.innerHTML = '<div class="empty-feed">Waiting for scans...</div>';
+            }
+        });
+    </script>
+</body>
+</html>
