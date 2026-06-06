@@ -68,12 +68,13 @@ struct ParkSession {
 };
 ParkSession sessions[10];
 
-// Multiplexer switch
+// Multiplexer switch with stabilization delay
 void tcaselect(uint8_t i) {
   if (i > 7) return;
   Wire.beginTransmission(TCAADDR);
   Wire.write(1 << i);
   Wire.endTransmission();
+  delay(2); // Short delay to let the multiplexer settle and avoid I2C collisions
 }
 
 // Convert RFID byte array to String
@@ -90,7 +91,14 @@ String getUID(MFRC522 &reader) {
 // Helper Function for Checking Slots
 void checkSlot(uint8_t tcaPort, Adafruit_VL53L0X &sensor, bool &isOccupied, String slotName, int ledIndex) {
   tcaselect(tcaPort);
+  
   VL53L0X_RangingMeasurementData_t measure;
+  
+  // Wipe the memory container clean so it does not copy the previous sensor
+  memset(&measure, 0, sizeof(VL53L0X_RangingMeasurementData_t));
+  measure.RangeStatus = 4; // Default to error state
+  measure.RangeMilliMeter = 8190; // Default to out of bounds
+  
   sensor.rangingTest(&measure, false);
 
   bool currentlyOccupied = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900);
@@ -291,13 +299,15 @@ void loop() {
       if (sessions[i].isActive && sessions[i].uid == scannedUID) {
         sessions[i].isActive = false; 
         
-        float totalTimeSeconds = (currentMillis - sessions[i].startTime) / 1000.0;
-        float totalFee = totalTimeSeconds * 5.0; 
+        // --- UPDATED MATH LOGIC ---
+        float rawTimeSeconds = (currentMillis - sessions[i].startTime) / 1000.0;
+        int roundedSeconds = round(rawTimeSeconds); // Standard rounding (.5 goes up)
+        int totalFee = roundedSeconds * 5;          // Fee is precisely calculated on the rounded integer
         
-        // Push final receipt to Firebase
+        // Push final rounded receipt to Firebase
         Firebase.setString(fbdo, "/users/" + scannedUID + "/status", "Left");
-        Firebase.setFloat(fbdo, "/users/" + scannedUID + "/last_duration", totalTimeSeconds);
-        Firebase.setFloat(fbdo, "/users/" + scannedUID + "/last_fee", totalFee);
+        Firebase.setInt(fbdo, "/users/" + scannedUID + "/last_duration", roundedSeconds);
+        Firebase.setInt(fbdo, "/users/" + scannedUID + "/last_fee", totalFee);
 
         // Display formatted layout on 1.3" OLED
         u8g2.clearBuffer();          
@@ -308,14 +318,14 @@ void loop() {
         u8g2.drawStr(0, 20, "Management System");
         u8g2.drawHLine(0, 23, 128); 
         
-        // Clean duration metrics
-        String durText = "Duration: " + String((int)totalTimeSeconds) + "s";
-        u8g2.drawStr(0, 40, durText.c_str());
+        // Clean rounded duration metrics
+        String durText = "Duration: " + String(roundedSeconds) + "s";
+        u8g2.drawStr(0, 38, durText.c_str());
 
-        // Prominent Fee Display
-        u8g2.setFont(u8g2_font_ncenB12_tr); 
-        String feeText = "Rs. " + String((int)totalFee);
-        u8g2.drawStr(0, 60, feeText.c_str());
+        // MASSIVE Fee Display
+        u8g2.setFont(u8g2_font_ncenB14_tr); 
+        String feeText = "Fee: Rs." + String(totalFee);
+        u8g2.drawStr(0, 62, feeText.c_str());
         
         u8g2.sendBuffer(); 
         
