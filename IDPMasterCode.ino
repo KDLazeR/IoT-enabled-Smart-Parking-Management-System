@@ -6,7 +6,7 @@
 #include <ESP32Servo.h>
 #include <LiquidCrystal_I2C.h>
 #include "Adafruit_VL53L0X.h"
-#include <Adafruit_NeoPixel.h>
+#include <Adafruit_NeoPixel.h> 
 
 // ::: WIFI & FIREBASE CREDENTIALS :::
 #define WIFI_SSID "Kanchana’s iPhone"     
