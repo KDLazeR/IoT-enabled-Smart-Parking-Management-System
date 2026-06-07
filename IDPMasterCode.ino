@@ -15,7 +15,6 @@
 #define API_KEY "AIzaSyAQ7aiMWt4rP33b9bt0CmzYb-0N6EFlBmw"
 #define DATABASE_URL "smart-parking-system-69023-default-rtdb.asia-southeast1.firebasedatabase.app"
 
-// Firebase Objects
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
@@ -38,47 +37,55 @@ Servo entryGate;
 Servo exitGate;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
-
-// Initialize OLED with SH1106 driver (perfect for 1.3" displays)
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
-// Initialize 3 ToF Sensors
 Adafruit_VL53L0X sensor1 = Adafruit_VL53L0X();
 Adafruit_VL53L0X sensor2 = Adafruit_VL53L0X();
 Adafruit_VL53L0X sensor3 = Adafruit_VL53L0X();
 
-// ::: GLOBAL VARIABLES :::
+// ::: TIMERS :::
 unsigned long entryGateTimer = 0;
 bool isEntryGateOpen = false;
 bool isEntryDenied = false; 
 
-// Exit Gate State Machine Variables
 unsigned long exitGateTimer = 0;
-int exitGateState = 0; // 0 = Idle, 1 = Showing Receipt (Waiting 7s to open), 2 = Gate Open (Waiting 7s to close)
+int exitGateState = 0; 
+String exitingSlot = ""; 
 
-// Track states of all 3 slots
-bool isSlot1Occupied = false; 
-bool isSlot2Occupied = false; 
-bool isSlot3Occupied = false; 
+// ::: SLOT STATE MACHINE :::
+enum SlotState { FREE, RESERVED, EXPECTING_CAR, OCCUPIED };
+SlotState slotStates[3] = {FREE, FREE, FREE};
+String assignedUsers[3] = {"", "", ""};
+unsigned long reserveTimers[3] = {0, 0, 0};
+
+unsigned long lastFbPoll = 0;
+int currentPollSlot = 0;
 
 struct ParkSession {
   String uid;
+  String slotName; 
   unsigned long startTime;
   bool isActive;
 };
 ParkSession sessions[10];
 
-// Multiplexer switch with stabilization delay
 void tcaselect(uint8_t i) {
   if (i > 7) return;
   Wire.beginTransmission(TCAADDR);
   Wire.write(1 << i);
   Wire.endTransmission();
-  delay(2); // Short delay to let the multiplexer settle and avoid I2C collisions
+  delayMicroseconds(50); 
 }
 
-// Convert RFID byte array to String
-String getUID(MFRC522 &reader) {
+String getMappedID(String uid) {
+  if (uid == "6B416C00") return "REG-001";
+  if (uid == "73F77B89") return "REG-002";
+  if (uid == "4B30B373") return "RES-001";
+  if (uid == "0984A948") return "RES-002";
+  return "UNKNOWN";
+}
+
+String getRawUID(MFRC522 &reader) {
   String uidString = "";
   for (byte i = 0; i < reader.uid.size; i++) {
     if (reader.uid.uidByte[i] < 0x10) uidString += "0";
@@ -88,41 +95,76 @@ String getUID(MFRC522 &reader) {
   return uidString;
 }
 
-// Helper Function for Checking Slots
-void checkSlot(uint8_t tcaPort, Adafruit_VL53L0X &sensor, bool &isOccupied, String slotName, int ledIndex) {
-  tcaselect(tcaPort);
-  
+// FAST DETECTION ToF Sensor Logic
+void handleToFSensors(unsigned long currentMillis) {
   VL53L0X_RangingMeasurementData_t measure;
   
-  // Wipe the memory container clean so it does not copy the previous sensor
-  memset(&measure, 0, sizeof(VL53L0X_RangingMeasurementData_t));
-  measure.RangeStatus = 4; // Default to error state
-  measure.RangeMilliMeter = 8190; // Default to out of bounds
-  
-  sensor.rangingTest(&measure, false);
-
-  bool currentlyOccupied = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900);
-
-  if (currentlyOccupied != isOccupied) {
-    isOccupied = currentlyOccupied;
+  for (int i = 0; i < 3; i++) {
+    tcaselect(i);
     
-    // 1. INSTANT PHYSICAL FEEDBACK 
-    if (isOccupied) {
-      strip.setPixelColor(ledIndex, strip.Color(255, 0, 0)); // Red
-    } else {
-      strip.setPixelColor(ledIndex, strip.Color(0, 255, 0)); // Green
+    if (i == 0) sensor1.rangingTest(&measure, false);
+    else if (i == 1) sensor2.rangingTest(&measure, false);
+    else if (i == 2) sensor3.rangingTest(&measure, false);
+
+    bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900 && measure.RangeMilliMeter > 10);
+    String slotStr = "A" + String(i + 1);
+
+    // 1. CAR PARKS
+    if (obstacleDetected) {
+      if (slotStates[i] == FREE || slotStates[i] == EXPECTING_CAR) {
+        slotStates[i] = OCCUPIED;
+        strip.setPixelColor(i, strip.Color(255, 0, 0)); // RED
+        strip.show();
+        Firebase.setString(fbdo, "/slots/" + slotStr, "Occupied");
+      }
     }
-    strip.show(); 
     
-    // 2. CLOUD UPDATE
-    if (isOccupied) {
-      Firebase.setString(fbdo, "/slots/" + slotName, "Occupied");
-      Serial.println("Slot " + slotName + " is OCCUPIED");
-    } else {
-      Firebase.setString(fbdo, "/slots/" + slotName, "Free");
-      Firebase.setString(fbdo, "/slot_names/" + slotName, ""); 
-      Serial.println("Slot " + slotName + " is FREE");
+    // 2. CAR LEAVES PHYSICAL SLOT
+    else if (!obstacleDetected) {
+      if (slotStates[i] == OCCUPIED) {
+        slotStates[i] = FREE;
+        assignedUsers[i] = ""; 
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
+        strip.show();
+        Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
+      }
     }
+
+    // 3. RESERVATION TIMEOUT (15s rule)
+    if (slotStates[i] == RESERVED) {
+      if (currentMillis - reserveTimers[i] >= 15000) {
+        slotStates[i] = FREE;
+        assignedUsers[i] = ""; 
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
+        strip.show();
+        Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
+        // Using a space bypasses the empty string upload bug
+        Firebase.setString(fbdo, "/slot_names/" + slotStr, " "); 
+      }
+    }
+  }
+}
+
+void pollReservations(unsigned long currentMillis) {
+  if (currentMillis - lastFbPoll >= 1000) {
+    lastFbPoll = currentMillis;
+    String slotStr = "A" + String(currentPollSlot + 1);
+    
+    if (slotStates[currentPollSlot] == FREE) {
+      if (Firebase.getString(fbdo, "/slots/" + slotStr)) {
+        if (fbdo.stringData() == "Reserved") {
+          slotStates[currentPollSlot] = RESERVED;
+          reserveTimers[currentPollSlot] = currentMillis; 
+          
+          Firebase.getString(fbdo, "/slot_names/" + slotStr);
+          assignedUsers[currentPollSlot] = fbdo.stringData();
+          
+          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); // BLUE
+          strip.show();
+        }
+      }
+    }
+    currentPollSlot = (currentPollSlot + 1) % 3;
   }
 }
 
@@ -130,238 +172,237 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
   SPI.begin();
+  Wire.setClock(400000); 
 
-  // Connect to WiFi
   Serial.print("Connecting to WiFi...");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
-  }
-  Serial.println("\nWiFi Connected!");
-
-  // Initialize Firebase
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
   config.signer.test_mode = true; 
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
 
-  // Fix for Dual RFID Conflict
-  pinMode(ENTRY_SS, OUTPUT);
-  pinMode(EXIT_SS, OUTPUT);
-  digitalWrite(ENTRY_SS, HIGH); 
-  digitalWrite(EXIT_SS, HIGH);  
+  // NUKE GHOST DATA ON STARTUP
+  Serial.println("Wiping ghost data from Firebase...");
+  Firebase.setString(fbdo, "/slot_names/A1", " ");
+  Firebase.setString(fbdo, "/slot_names/A2", " ");
+  Firebase.setString(fbdo, "/slot_names/A3", " ");
 
-  rfidEntry.PCD_Init();
-  rfidExit.PCD_Init();
+  pinMode(ENTRY_SS, OUTPUT); pinMode(EXIT_SS, OUTPUT);
+  digitalWrite(ENTRY_SS, HIGH); digitalWrite(EXIT_SS, HIGH);  
+  rfidEntry.PCD_Init(); rfidExit.PCD_Init();
 
-  // Initialize Servos
-  ESP32PWM::allocateTimer(0);
-  ESP32PWM::allocateTimer(1);
-  entryGate.setPeriodHertz(50);
-  exitGate.setPeriodHertz(50);
-  entryGate.attach(ENTRY_SERVO, 500, 2400);
-  exitGate.attach(EXIT_SERVO, 500, 2400);
-  entryGate.write(0); 
-  exitGate.write(0);  
+  ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
+  entryGate.setPeriodHertz(50); exitGate.setPeriodHertz(50);
+  entryGate.attach(ENTRY_SERVO, 500, 2400); entryGate.write(0); 
+  exitGate.attach(EXIT_SERVO, 500, 2400); exitGate.write(0);  
 
-  // Initialize LCD
-  lcd.init();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print(" SMART PARKING  ");
-  lcd.setCursor(0, 1);
-  lcd.print(" PLEASE SCAN IN ");
+  lcd.init(); lcd.backlight();
+  lcd.setCursor(0, 0); lcd.print(" SMART PARKING  ");
+  lcd.setCursor(0, 1); lcd.print(" PLEASE SCAN IN ");
 
-  // Initialize OLED (Clean initial layout)
-  u8g2.begin();
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tf); 
+  u8g2.begin(); u8g2.clearBuffer(); u8g2.setFont(u8g2_font_6x10_tf); 
   u8g2.drawStr(0, 10, "IoT+ Smart Parking");
   u8g2.drawStr(0, 20, "Management System");
-  u8g2.drawHLine(0, 23, 128); // Underline
-  u8g2.drawStr(20, 48, "Ready for Exit");
+  u8g2.drawHLine(0, 23, 128); u8g2.drawStr(20, 48, "Ready for Exit");
   u8g2.sendBuffer();
 
-  // Initialize NeoPixels (Start all 3 as Green)
-  strip.begin();
-  strip.setBrightness(50);
+  strip.begin(); strip.setBrightness(50);
   strip.setPixelColor(0, strip.Color(0, 255, 0)); 
   strip.setPixelColor(1, strip.Color(0, 255, 0)); 
   strip.setPixelColor(2, strip.Color(0, 255, 0)); 
   strip.show();
 
-  // Initialize 3 ToF Sensors
-  tcaselect(0); if (!sensor1.begin()) Serial.println("ToF A1 failed.");
-  tcaselect(1); if (!sensor2.begin()) Serial.println("ToF A2 failed.");
-  tcaselect(2); if (!sensor3.begin()) Serial.println("ToF A3 failed.");
+  tcaselect(0); sensor1.begin(); sensor1.setMeasurementTimingBudgetMicroSeconds(20000);
+  tcaselect(1); sensor2.begin(); sensor2.setMeasurementTimingBudgetMicroSeconds(20000);
+  tcaselect(2); sensor3.begin(); sensor3.setMeasurementTimingBudgetMicroSeconds(20000);
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
-  // ==========================================
-  // 1. CHECK ALL 3 SLOTS
-  // ==========================================
-  checkSlot(0, sensor1, isSlot1Occupied, "A1", 0);
-  checkSlot(1, sensor2, isSlot2Occupied, "A2", 1);
-  checkSlot(2, sensor3, isSlot3Occupied, "A3", 2);
+  handleToFSensors(currentMillis);
+  pollReservations(currentMillis);
 
   // ==========================================
-  // 2. ENTRY GATE LOGIC
+  // ENTRY GATE LOGIC
   // ==========================================
   if (rfidEntry.PICC_IsNewCardPresent() && rfidEntry.PICC_ReadCardSerial()) {
+    String rawUID = getRawUID(rfidEntry);
+    String mappedID = getMappedID(rawUID);
     
-    bool isLotFull = (isSlot1Occupied && isSlot2Occupied && isSlot3Occupied);
-
-    if (isLotFull) {
-      Serial.println("Entry Denied: Parking Lot Full");
-      
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("  PARKING FULL  ");
-      lcd.setCursor(0, 1);
-      lcd.print("   NO ENTRY!    ");
-      
-      isEntryDenied = true;
-      entryGateTimer = currentMillis; 
-      
-      rfidEntry.PICC_HaltA(); 
-      
-    } else {
-      String scannedUID = getUID(rfidEntry);
-      
-      for (int i = 0; i < 10; i++) {
-        if (!sessions[i].isActive) {
-          sessions[i].uid = scannedUID;
-          sessions[i].startTime = currentMillis;
-          sessions[i].isActive = true;
-          break;
+    if (mappedID == "UNKNOWN") {
+      lcd.clear(); lcd.setCursor(0, 0); lcd.print("UNAUTHORIZED");
+      isEntryDenied = true; entryGateTimer = currentMillis;
+    } 
+    else {
+      bool alreadyInside = false;
+      for (int i=0; i<3; i++) {
+        if (assignedUsers[i] == mappedID && slotStates[i] != RESERVED) {
+          alreadyInside = true; break;
         }
       }
 
-      // Dynamic slot assignment display
-      String assigned = "A1";
-      if (!isSlot1Occupied) assigned = "A1";
-      else if (!isSlot2Occupied) assigned = "A2";
-      else if (!isSlot3Occupied) assigned = "A3";
+      if (alreadyInside) {
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print("ALREADY INSIDE");
+        isEntryDenied = true; entryGateTimer = currentMillis;
+      }
+      else {
+        String assignedSlotStr = "";
+        int assignedIndex = -1;
+        bool isResCard = mappedID.startsWith("RES");
 
-      // Upload Status and link the RFID to the assigned slot
-      Firebase.setString(fbdo, "/users/" + scannedUID + "/status", "Parked");
-      Firebase.setString(fbdo, "/slot_names/" + assigned, scannedUID);
-      
-      entryGate.write(45);
-      isEntryGateOpen = true;
-      entryGateTimer = currentMillis; 
+        if (isResCard) {
+          for (int i=0; i<3; i++) {
+            if (slotStates[i] == RESERVED && assignedUsers[i] == mappedID) {
+              assignedIndex = i; 
+              slotStates[i] = EXPECTING_CAR; 
+              break;
+            }
+          }
+        }
 
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Welcome!");
-      lcd.setCursor(0, 1);
-      lcd.print("Slot: " + assigned);
+        if (!isResCard) {
+          for (int i=0; i<3; i++) {
+            if (slotStates[i] == FREE) {
+              assignedIndex = i; 
+              slotStates[i] = EXPECTING_CAR;
+              assignedUsers[i] = mappedID;
+              break;
+            }
+          }
+        }
 
-      rfidEntry.PICC_HaltA(); 
+        if (assignedIndex == -1) {
+          lcd.clear(); lcd.setCursor(0, 0); 
+          if (isResCard) lcd.print("NO RESERVATION");
+          else lcd.print("  PARKING FULL  ");
+          isEntryDenied = true; entryGateTimer = currentMillis;
+        } 
+        else {
+          assignedSlotStr = "A" + String(assignedIndex + 1);
+
+          for (int i = 0; i < 10; i++) {
+            if (!sessions[i].isActive) {
+              sessions[i].uid = mappedID;
+              sessions[i].slotName = assignedSlotStr; 
+              sessions[i].startTime = currentMillis;
+              sessions[i].isActive = true;
+              break;
+            }
+          }
+
+          Firebase.setString(fbdo, "/users/" + mappedID + "/status", "Parked");
+          Firebase.setString(fbdo, "/slots/" + assignedSlotStr, "Expecting");
+          Firebase.setString(fbdo, "/slot_names/" + assignedSlotStr, mappedID); 
+          
+          entryGate.write(45);
+          isEntryGateOpen = true;
+          entryGateTimer = currentMillis; 
+
+          lcd.clear(); lcd.setCursor(0, 0); lcd.print("Welcome " + mappedID);
+          lcd.setCursor(0, 1); lcd.print("Go to Slot: " + assignedSlotStr);
+        }
+      }
     }
+    rfidEntry.PICC_HaltA(); 
   }
 
-  // Timer Check for Entry Gate
   if (isEntryGateOpen && (currentMillis - entryGateTimer >= 7000)) {
-    entryGate.write(0); 
-    isEntryGateOpen = false;
-    
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(" SMART PARKING  ");
-    lcd.setCursor(0, 1);
-    lcd.print(" PLEASE SCAN IN ");
-  } 
-  else if (isEntryDenied && (currentMillis - entryGateTimer >= 3000)) {
+    entryGate.write(0); isEntryGateOpen = false;
+    lcd.clear(); lcd.setCursor(0, 0); lcd.print(" SMART PARKING  ");
+    lcd.setCursor(0, 1); lcd.print(" PLEASE SCAN IN ");
+  } else if (isEntryDenied && (currentMillis - entryGateTimer >= 3000)) {
     isEntryDenied = false;
-    
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(" SMART PARKING  ");
-    lcd.setCursor(0, 1);
-    lcd.print(" PLEASE SCAN IN ");
+    lcd.clear(); lcd.setCursor(0, 0); lcd.print(" SMART PARKING  ");
+    lcd.setCursor(0, 1); lcd.print(" PLEASE SCAN IN ");
   }
 
   // ==========================================
-  // 3. EXIT GATE & FEE LOGIC (STATE MACHINE)
+  // EXIT GATE LOGIC
   // ==========================================
-  
-  // Accept scan only if system is currently Idle (State 0)
   if (exitGateState == 0 && rfidExit.PICC_IsNewCardPresent() && rfidExit.PICC_ReadCardSerial()) {
-    String scannedUID = getUID(rfidExit);
+    String rawUID = getRawUID(rfidExit);
+    String mappedID = getMappedID(rawUID);
     
     bool sessionFound = false;
     for (int i = 0; i < 10; i++) {
-      if (sessions[i].isActive && sessions[i].uid == scannedUID) {
+      if (sessions[i].isActive && sessions[i].uid == mappedID) {
         sessions[i].isActive = false; 
         
-        // --- UPDATED MATH LOGIC ---
-        float rawTimeSeconds = (currentMillis - sessions[i].startTime) / 1000.0;
-        int roundedSeconds = round(rawTimeSeconds); // Standard rounding (.5 goes up)
-        int totalFee = roundedSeconds * 5;          // Fee is precisely calculated on the rounded integer
+        exitingSlot = sessions[i].slotName; 
         
-        // Push final rounded receipt to Firebase
-        Firebase.setString(fbdo, "/users/" + scannedUID + "/status", "Left");
-        Firebase.setInt(fbdo, "/users/" + scannedUID + "/last_duration", roundedSeconds);
-        Firebase.setInt(fbdo, "/users/" + scannedUID + "/last_fee", totalFee);
+        float rawTimeSeconds = (currentMillis - sessions[i].startTime) / 1000.0;
+        int roundedSeconds = round(rawTimeSeconds); 
+        
+        int durationFee = roundedSeconds * 5; 
+        int resFee = mappedID.startsWith("RES") ? 10 : 0;
+        int totalFee = durationFee + resFee;
+        
+        Firebase.setString(fbdo, "/users/" + mappedID + "/status", "Left");
+        Firebase.setInt(fbdo, "/users/" + mappedID + "/last_duration", roundedSeconds);
+        Firebase.setInt(fbdo, "/users/" + mappedID + "/duration_fee", durationFee);
+        Firebase.setInt(fbdo, "/users/" + mappedID + "/res_fee", resFee);
+        Firebase.setInt(fbdo, "/users/" + mappedID + "/last_fee", totalFee);
 
-        // Display formatted layout on 1.3" OLED
         u8g2.clearBuffer();          
         u8g2.setFont(u8g2_font_6x10_tf); 
-        
-        // Underlined main title
         u8g2.drawStr(0, 10, "IoT+ Smart Parking");
         u8g2.drawStr(0, 20, "Management System");
         u8g2.drawHLine(0, 23, 128); 
         
-        // Clean rounded duration metrics
         String durText = "Duration: " + String(roundedSeconds) + "s";
         u8g2.drawStr(0, 38, durText.c_str());
 
-        // MASSIVE Fee Display
         u8g2.setFont(u8g2_font_ncenB14_tr); 
         String feeText = "Fee: Rs." + String(totalFee);
         u8g2.drawStr(0, 62, feeText.c_str());
-        
         u8g2.sendBuffer(); 
         
-        sessionFound = true;
-        break;
+        sessionFound = true; break;
       }
     }
 
     if (sessionFound) {
-      // Transition to State 1: Displaying receipt details, waiting 7 seconds to open servo
       exitGateState = 1; 
       exitGateTimer = currentMillis; 
     }
-
     rfidExit.PICC_HaltA(); 
   }
 
-  // State 1 to 2: 7 seconds have run out, open the exit gate servo
   if (exitGateState == 1 && (currentMillis - exitGateTimer >= 7000)) {
     exitGate.write(45); 
-    exitGateState = 2; // Transition to State 2 (Servo open)
-    exitGateTimer = currentMillis; // Reset timer loop tracking for final closure
+    exitGateState = 2; 
+    exitGateTimer = currentMillis; 
   }
   
-  // State 2 to 0: Main open interval finishes, safely drop servo and return to idle
+  // EXIT GATE CLOSES AND WIPES ID
   else if (exitGateState == 2 && (currentMillis - exitGateTimer >= 7000)) {
     exitGate.write(0); 
     exitGateState = 0; 
     
-    // Clear display back to default welcome screen layout
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf); 
+    if (exitingSlot != "") {
+      // Using a space here physically overwrites the old ghost text
+      Firebase.setString(fbdo, "/slot_names/" + exitingSlot, " "); 
+      
+      int slotIndex = exitingSlot.charAt(1) - '1'; 
+      if (slotIndex >= 0 && slotIndex <= 2) {
+        if (slotStates[slotIndex] == EXPECTING_CAR) {
+           slotStates[slotIndex] = FREE;
+           strip.setPixelColor(slotIndex, strip.Color(0, 255, 0));
+           strip.show();
+           Firebase.setString(fbdo, "/slots/" + exitingSlot, "Free");
+        }
+      }
+      exitingSlot = ""; 
+    }
+
+    u8g2.clearBuffer(); u8g2.setFont(u8g2_font_6x10_tf); 
     u8g2.drawStr(0, 10, "IoT+ Smart Parking");
     u8g2.drawStr(0, 20, "Management System");
-    u8g2.drawHLine(0, 23, 128);
-    u8g2.drawStr(20, 48, "Ready for Exit");
+    u8g2.drawHLine(0, 23, 128); u8g2.drawStr(20, 48, "Ready for Exit");
     u8g2.sendBuffer();
   }
 }

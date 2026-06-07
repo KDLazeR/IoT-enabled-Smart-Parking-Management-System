@@ -13,7 +13,7 @@
             
             --color-free: #7b9a6d;      
             --color-occupied: #b85c50;  
-            --color-reserved: #4a90e2; /* New Blue color for reservations */
+            --color-reserved: #4a90e2; 
             
             --shadow: 0 4px 12px rgba(74, 63, 53, 0.08);
             --border-radius: 12px;
@@ -44,12 +44,12 @@
             font-size: 1.2rem;
             font-weight: bold;
             box-shadow: var(--shadow);
+            transition: all var(--transition-speed) ease;
         }
 
         h2 { font-size: 1.3rem; margin-bottom: 15px; color: var(--text-main); }
         section { margin-bottom: 40px; }
 
-        /* Slot Grid */
         .slot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
 
         .slot-card {
@@ -61,19 +61,19 @@
             transition: all var(--transition-speed) ease;
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            align-items: center;
+            gap: 8px;
         }
 
-        .slot-card h3 { font-size: 2.2rem; }
+        .slot-card h3 { font-size: 2.2rem; margin: 0; }
         .slot-card .status { font-size: 1.1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
         
         .driver-id {
-            font-size: 1.2rem;
-            font-weight: bold;
-            padding: 5px;
-            background: rgba(255,255,255,0.3);
-            border-radius: 6px;
-            display: none; 
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--bg-base); 
+            min-height: 30px;
+            letter-spacing: 1px;
         }
 
         .reserve-btn {
@@ -84,23 +84,18 @@
             border-radius: 6px;
             cursor: pointer;
             font-weight: bold;
-            display: none;
+            display: none; /* Strictly controlled by JavaScript now */
+            margin-top: 5px;
         }
 
         .reserve-btn:hover { background-color: #fff; }
 
         .slot-card.free { background-color: var(--color-free); color: var(--bg-base); }
-        .slot-card.free .reserve-btn { display: inline-block; } /* Only show reserve button if free */
-        
         .slot-card.occupied { background-color: var(--color-occupied); color: var(--bg-base); }
-        .slot-card.occupied .driver-id { display: block; }
-        
         .slot-card.reserved { background-color: var(--color-reserved); color: var(--bg-base); }
-        .slot-card.reserved .driver-id { display: block; }
-
+        .slot-card.expecting { background-color: var(--color-occupied); color: var(--bg-base); }
         .slot-card.loading { background-color: var(--bg-surface); color: var(--text-muted); }
 
-        /* Receipt styling */
         .receipt-card {
             background-color: var(--bg-surface);
             border-radius: var(--border-radius);
@@ -169,9 +164,8 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        // Make reservation function globally available to HTML buttons
         window.triggerReservation = function(slotId) {
-            let code = prompt("Enter User Code (001 or 002):", "001");
+            let code = prompt("Enter User Code (e.g., 001 or 002):", "001");
             if (code === "001" || code === "002") {
                 let resId = "RES-" + code;
                 set(ref(db, 'slots/' + slotId), "Reserved");
@@ -185,39 +179,58 @@
         const slotsRef = ref(db, 'slots');
         const namesRef = ref(db, 'slot_names');
         
-        onValue(slotsRef, (snapshot) => {
-            const data = snapshot.val() || {};
+        // Data storage for unified UI updates
+        let currentSlots = {};
+        let currentNames = {};
+
+        // Unified rendering function ensuring button only shows when truly ready
+        function updateDashboard() {
             let freeCount = 0;
 
             slots.forEach(slotId => {
-                const status = data[slotId] || "Free";
+                const status = currentSlots[slotId] || "Free";
+                const assignedName = (currentNames[slotId] || "").trim();
+
                 const cardEl = document.getElementById('card-' + slotId);
                 const statusEl = document.getElementById('status-' + slotId);
+                const nameEl = document.getElementById('name-' + slotId);
+                const btnEl = cardEl.querySelector('.reserve-btn');
 
+                // Update text and CSS colors
                 statusEl.innerText = status;
-                cardEl.classList.remove('loading', 'free', 'occupied', 'reserved');
-                cardEl.classList.add(status.toLowerCase()); 
-                
-                if (status === "Free") freeCount++;
+                cardEl.className = 'slot-card ' + status.toLowerCase();
+                nameEl.innerText = assignedName;
+
+                // STRICT LOGIC: The slot must be physically "Free" AND completely wiped of the driver's ID.
+                if (status === "Free" && assignedName === "") {
+                    freeCount++;
+                    btnEl.style.display = "inline-block"; // Show button
+                } else {
+                    btnEl.style.display = "none"; // Hide button
+                }
             });
+
             document.getElementById('available-counter').innerText = `${freeCount} / 3 Slots Available`;
+        }
+
+        // Firebase Listeners trigger the unified update
+        onValue(slotsRef, (snapshot) => {
+            currentSlots = snapshot.val() || {};
+            updateDashboard();
         });
 
-        // Listen for User Code pushes
         onValue(namesRef, (snapshot) => {
-            const names = snapshot.val() || {};
-            slots.forEach(slotId => {
-                document.getElementById('name-' + slotId).innerText = names[slotId] || "";
-            });
+            currentNames = snapshot.val() || {};
+            updateDashboard();
         });
 
-        // --- Detailed Checkout Logic ---
+        // Checkout Receipt Logic
         const usersRef = ref(db, 'users');
         const receiptEl = document.getElementById('checkout-receipt');
 
         onChildChanged(usersRef, (snapshot) => {
             const data = snapshot.val();
-            const uid = snapshot.key; // e.g., REG-001
+            const uid = snapshot.key; 
 
             if (data.status === "Left") {
                 const dur = parseInt(data.last_duration || 0);
@@ -228,7 +241,7 @@
                 let resHtml = resFee > 0 ? `<br>Reservation Charge: Rs. ${resFee}` : "";
 
                 receiptEl.innerHTML = `
-                    <div class="rfid">Driver ID: <strong>${uid}</strong></div>
+                    <div class="rfid">Assigned ID: <strong>${uid}</strong></div>
                     <div class="fee">Rs. ${totalFee}</div>
                     <div class="details">
                         Total Duration: ${dur} seconds<br>
