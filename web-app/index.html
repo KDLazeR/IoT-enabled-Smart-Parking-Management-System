@@ -13,7 +13,7 @@
             
             --color-free: #7b9a6d;      
             --color-occupied: #b85c50;  
-            --color-highlight: #d4a373;
+            --color-reserved: #4a90e2; /* New Blue color for reservations */
             
             --shadow: 0 4px 12px rgba(74, 63, 53, 0.08);
             --border-radius: 12px;
@@ -30,19 +30,9 @@
             padding: 20px;
         }
 
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            padding-bottom: 40px;
-        }
+        .container { max-width: 900px; margin: 0 auto; padding-bottom: 40px; }
 
-        header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px 0;
-            border-bottom: 2px solid var(--bg-surface);
-        }
-
+        header { text-align: center; margin-bottom: 30px; padding: 20px 0; border-bottom: 2px solid var(--bg-surface); }
         header h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 10px; }
 
         .counter-badge {
@@ -60,11 +50,7 @@
         section { margin-bottom: 40px; }
 
         /* Slot Grid */
-        .slot-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-        }
+        .slot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
 
         .slot-card {
             background-color: var(--bg-surface);
@@ -80,27 +66,41 @@
 
         .slot-card h3 { font-size: 2.2rem; }
         .slot-card .status { font-size: 1.1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
-
-        /* Customizable Driver Input */
-        .driver-input {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid rgba(0,0,0,0.1);
+        
+        .driver-id {
+            font-size: 1.2rem;
+            font-weight: bold;
+            padding: 5px;
+            background: rgba(255,255,255,0.3);
             border-radius: 6px;
-            background-color: rgba(255,255,255,0.8);
-            color: var(--text-main);
-            font-size: 0.95rem;
-            text-align: center;
-            outline: none;
             display: none; 
         }
-        
+
+        .reserve-btn {
+            background-color: rgba(255,255,255,0.9);
+            color: var(--text-main);
+            border: none;
+            padding: 8px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            display: none;
+        }
+
+        .reserve-btn:hover { background-color: #fff; }
+
         .slot-card.free { background-color: var(--color-free); color: var(--bg-base); }
+        .slot-card.free .reserve-btn { display: inline-block; } /* Only show reserve button if free */
+        
         .slot-card.occupied { background-color: var(--color-occupied); color: var(--bg-base); }
-        .slot-card.occupied .driver-input { display: block; }
+        .slot-card.occupied .driver-id { display: block; }
+        
+        .slot-card.reserved { background-color: var(--color-reserved); color: var(--bg-base); }
+        .slot-card.reserved .driver-id { display: block; }
+
         .slot-card.loading { background-color: var(--bg-surface); color: var(--text-muted); }
 
-        /* Latest Checkout Receipt */
+        /* Receipt styling */
         .receipt-card {
             background-color: var(--bg-surface);
             border-radius: var(--border-radius);
@@ -110,24 +110,17 @@
             border: 2px dashed var(--text-muted);
         }
 
-        .receipt-card .rfid { font-size: 1.2rem; color: var(--text-muted); margin-bottom: 10px; }
-        .receipt-card .fee { font-size: 2.5rem; font-weight: bold; color: var(--color-occupied); margin: 15px 0; }
-        .receipt-card .duration { font-size: 1.1rem; color: var(--text-main); }
-
+        .receipt-card .rfid { font-size: 1.3rem; color: var(--text-main); margin-bottom: 5px; }
+        .receipt-card .fee { font-size: 2.5rem; font-weight: bold; color: var(--color-occupied); margin: 10px 0; }
+        .receipt-card .details { font-size: 1.1rem; color: var(--text-muted); line-height: 1.8; }
         .empty-receipt { text-align: center; color: var(--text-muted); font-style: italic; font-size: 1.1rem; }
-
-        @media (max-width: 600px) {
-            header h1 { font-size: 1.4rem; }
-            .counter-badge { font-size: 1rem; }
-            .receipt-card .fee { font-size: 2rem; }
-        }
     </style>
 </head>
 <body>
 
     <div class="container">
         <header>
-            <h1>Smart Parking Management System</h1>
+            <h1>IoT+ Smart Parking Management System</h1>
             <div id="available-counter" class="counter-badge">Calculating Slots...</div>
         </header>
 
@@ -137,17 +130,20 @@
                 <div class="slot-card loading" id="card-A1">
                     <h3>A1</h3>
                     <div class="status" id="status-A1">Connecting...</div>
-                    <input type="text" id="name-A1" class="driver-input" placeholder="Tag: (e.g. UID or Plate)">
+                    <div class="driver-id" id="name-A1"></div>
+                    <button class="reserve-btn" onclick="triggerReservation('A1')">Reserve Slot</button>
                 </div>
                 <div class="slot-card loading" id="card-A2">
                     <h3>A2</h3>
                     <div class="status" id="status-A2">Connecting...</div>
-                    <input type="text" id="name-A2" class="driver-input" placeholder="Tag: (e.g. UID or Plate)">
+                    <div class="driver-id" id="name-A2"></div>
+                    <button class="reserve-btn" onclick="triggerReservation('A2')">Reserve Slot</button>
                 </div>
                 <div class="slot-card loading" id="card-A3">
                     <h3>A3</h3>
                     <div class="status" id="status-A3">Connecting...</div>
-                    <input type="text" id="name-A3" class="driver-input" placeholder="Tag: (e.g. UID or Plate)">
+                    <div class="driver-id" id="name-A3"></div>
+                    <button class="reserve-btn" onclick="triggerReservation('A3')">Reserve Slot</button>
                 </div>
             </div>
         </section>
@@ -173,7 +169,18 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        // --- Live Slot & Name Logic ---
+        // Make reservation function globally available to HTML buttons
+        window.triggerReservation = function(slotId) {
+            let code = prompt("Enter User Code (001 or 002):", "001");
+            if (code === "001" || code === "002") {
+                let resId = "RES-" + code;
+                set(ref(db, 'slots/' + slotId), "Reserved");
+                set(ref(db, 'slot_names/' + slotId), resId);
+            } else {
+                alert("Invalid Reservation Code!");
+            }
+        };
+
         const slots = ['A1', 'A2', 'A3'];
         const slotsRef = ref(db, 'slots');
         const namesRef = ref(db, 'slot_names');
@@ -188,52 +195,46 @@
                 const statusEl = document.getElementById('status-' + slotId);
 
                 statusEl.innerText = status;
-                cardEl.classList.remove('loading', 'free', 'occupied');
+                cardEl.classList.remove('loading', 'free', 'occupied', 'reserved');
                 cardEl.classList.add(status.toLowerCase()); 
                 
-                if (status === "Free") {
-                    freeCount++;
-                    document.getElementById('name-' + slotId).value = "";
-                }
+                if (status === "Free") freeCount++;
             });
             document.getElementById('available-counter').innerText = `${freeCount} / 3 Slots Available`;
         });
 
-        // Listen for RFID pushes from the ESP32
+        // Listen for User Code pushes
         onValue(namesRef, (snapshot) => {
             const names = snapshot.val() || {};
             slots.forEach(slotId => {
-                const inputEl = document.getElementById('name-' + slotId);
-                if (document.activeElement !== inputEl) {
-                    inputEl.value = names[slotId] || "";
-                }
+                document.getElementById('name-' + slotId).innerText = names[slotId] || "";
             });
         });
 
-        // Allow manual renaming by the user
-        slots.forEach(slotId => {
-            document.getElementById('name-' + slotId).addEventListener('change', (e) => {
-                set(ref(db, 'slot_names/' + slotId), e.target.value);
-            });
-        });
-
-        // --- Latest Checkout Logic ---
+        // --- Detailed Checkout Logic ---
         const usersRef = ref(db, 'users');
         const receiptEl = document.getElementById('checkout-receipt');
 
-        // This listens specifically for when a user's data changes (like scanning out)
         onChildChanged(usersRef, (snapshot) => {
             const data = snapshot.val();
-            const uid = snapshot.key;
+            const uid = snapshot.key; // e.g., REG-001
 
             if (data.status === "Left") {
-                const dur = parseFloat(data.last_duration || 0).toFixed(1);
-                const feeAmt = parseFloat(data.last_fee || 0).toFixed(2);
+                const dur = parseInt(data.last_duration || 0);
+                const durFee = parseInt(data.duration_fee || 0);
+                const resFee = parseInt(data.res_fee || 0);
+                const totalFee = parseInt(data.last_fee || 0);
                 
+                let resHtml = resFee > 0 ? `<br>Reservation Charge: Rs. ${resFee}` : "";
+
                 receiptEl.innerHTML = `
-                    <div class="rfid">Vehicle Tag: <strong>${uid}</strong></div>
-                    <div class="fee">Rs. ${feeAmt}</div>
-                    <div class="duration">Total Duration: ${dur} seconds</div>
+                    <div class="rfid">Driver ID: <strong>${uid}</strong></div>
+                    <div class="fee">Rs. ${totalFee}</div>
+                    <div class="details">
+                        Total Duration: ${dur} seconds<br>
+                        Duration Fee: Rs. ${durFee}
+                        ${resHtml}
+                    </div>
                 `;
             }
         });
