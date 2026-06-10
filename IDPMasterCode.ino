@@ -95,16 +95,25 @@ String getRawUID(MFRC522 &reader) {
   return uidString;
 }
 
-// FAST DETECTION ToF Sensor Logic
+// FAST DETECTION ToF Sensor Logic (With Swapped Sensors 1 and 3)
 void handleToFSensors(unsigned long currentMillis) {
   VL53L0X_RangingMeasurementData_t measure;
   
   for (int i = 0; i < 3; i++) {
-    tcaselect(i);
     
-    if (i == 0) sensor1.rangingTest(&measure, false);
-    else if (i == 1) sensor2.rangingTest(&measure, false);
-    else if (i == 2) sensor3.rangingTest(&measure, false);
+    // Physical routing swap
+    if (i == 0) {
+      tcaselect(2); 
+      sensor3.rangingTest(&measure, false);
+    } 
+    else if (i == 1) {
+      tcaselect(1); 
+      sensor2.rangingTest(&measure, false);
+    } 
+    else if (i == 2) {
+      tcaselect(0); 
+      sensor1.rangingTest(&measure, false);
+    }
 
     bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900 && measure.RangeMilliMeter > 10);
     String slotStr = "A" + String(i + 1);
