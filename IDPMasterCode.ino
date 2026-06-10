@@ -95,26 +95,16 @@ String getRawUID(MFRC522 &reader) {
   return uidString;
 }
 
-// FAST DETECTION ToF Sensor Logic (With updated physical routing)
+// FAST DETECTION ToF Sensor Logic
 void handleToFSensors(unsigned long currentMillis) {
+  VL53L0X_RangingMeasurementData_t measure;
+  
   for (int i = 0; i < 3; i++) {
-    int muxPort = 0;
+    tcaselect(i);
     
-    // Physical hardware routing map
-    if (i == 0) muxPort = 2;      // Slot A1 reads Sensor 3 (Port 2)
-    else if (i == 1) muxPort = 1; // Slot A2 reads Sensor 2 (Port 1)
-    else if (i == 2) muxPort = 0; // Slot A3 reads Sensor 1 (Port 0)
-
-    tcaselect(muxPort);
-    
-    VL53L0X_RangingMeasurementData_t measure;
-    memset(&measure, 0, sizeof(VL53L0X_RangingMeasurementData_t));
-    measure.RangeStatus = 4; 
-    measure.RangeMilliMeter = 8190; 
-    
-    if (muxPort == 0) sensor1.rangingTest(&measure, false);
-    else if (muxPort == 1) sensor2.rangingTest(&measure, false);
-    else if (muxPort == 2) sensor3.rangingTest(&measure, false);
+    if (i == 0) sensor1.rangingTest(&measure, false);
+    else if (i == 1) sensor2.rangingTest(&measure, false);
+    else if (i == 2) sensor3.rangingTest(&measure, false);
 
     bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900 && measure.RangeMilliMeter > 10);
     String slotStr = "A" + String(i + 1);
@@ -148,6 +138,7 @@ void handleToFSensors(unsigned long currentMillis) {
         strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
+        // Using a space bypasses the empty string upload bug
         Firebase.setString(fbdo, "/slot_names/" + slotStr, " "); 
       }
     }
@@ -393,6 +384,7 @@ void loop() {
     exitGateState = 0; 
     
     if (exitingSlot != "") {
+      // Using a space here physically overwrites the old ghost text
       Firebase.setString(fbdo, "/slot_names/" + exitingSlot, " "); 
       
       int slotIndex = exitingSlot.charAt(1) - '1'; 
