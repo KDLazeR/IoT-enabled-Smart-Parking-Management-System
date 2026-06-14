@@ -19,13 +19,17 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-// ::: PIN DEFINITIONS :::
-#define ENTRY_SS 5
-#define ENTRY_RST 16
-#define EXIT_SS 4
-#define EXIT_RST 17
-#define ENTRY_SERVO 25
-#define EXIT_SERVO 26
+// ::: EXPLICIT NEW PIN DEFINITIONS :::
+// The Old Exit is now the New Entry
+#define ENTRY_SS 4       
+#define ENTRY_RST 17     
+#define ENTRY_SERVO 26   
+
+// The Old Entry is now the New Exit
+#define EXIT_SS 5        
+#define EXIT_RST 16      
+#define EXIT_SERVO 25    
+
 #define LED_PIN 13
 #define LED_COUNT 3
 #define TCAADDR 0x70
@@ -37,7 +41,9 @@ Servo entryGate;
 Servo exitGate;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+
+// UPSIDE DOWN OLED APPLIED (U8G2_R2)
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, U8X8_PIN_NONE);
 
 Adafruit_VL53L0X sensor1 = Adafruit_VL53L0X();
 Adafruit_VL53L0X sensor2 = Adafruit_VL53L0X();
@@ -95,13 +101,11 @@ String getRawUID(MFRC522 &reader) {
   return uidString;
 }
 
-// FAST DETECTION ToF Sensor Logic (With Swapped Sensors 1 and 3)
+// FAST DETECTION ToF Sensor Logic
 void handleToFSensors(unsigned long currentMillis) {
   VL53L0X_RangingMeasurementData_t measure;
   
   for (int i = 0; i < 3; i++) {
-    
-    // Physical routing swap
     if (i == 0) {
       tcaselect(2); 
       sensor3.rangingTest(&measure, false);
@@ -118,36 +122,31 @@ void handleToFSensors(unsigned long currentMillis) {
     bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900 && measure.RangeMilliMeter > 10);
     String slotStr = "A" + String(i + 1);
 
-    // 1. CAR PARKS
     if (obstacleDetected) {
       if (slotStates[i] == FREE || slotStates[i] == EXPECTING_CAR) {
         slotStates[i] = OCCUPIED;
-        strip.setPixelColor(i, strip.Color(255, 0, 0)); // RED
+        strip.setPixelColor(i, strip.Color(255, 0, 0)); 
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Occupied");
       }
     }
-    
-    // 2. CAR LEAVES PHYSICAL SLOT
     else if (!obstacleDetected) {
       if (slotStates[i] == OCCUPIED) {
         slotStates[i] = FREE;
         assignedUsers[i] = ""; 
-        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); 
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
       }
     }
 
-    // 3. RESERVATION TIMEOUT (15s rule)
     if (slotStates[i] == RESERVED) {
       if (currentMillis - reserveTimers[i] >= 15000) {
         slotStates[i] = FREE;
         assignedUsers[i] = ""; 
-        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); 
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
-        // Using a space bypasses the empty string upload bug
         Firebase.setString(fbdo, "/slot_names/" + slotStr, " "); 
       }
     }
@@ -168,7 +167,7 @@ void pollReservations(unsigned long currentMillis) {
           Firebase.getString(fbdo, "/slot_names/" + slotStr);
           assignedUsers[currentPollSlot] = fbdo.stringData();
           
-          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); // BLUE
+          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); 
           strip.show();
         }
       }
@@ -193,20 +192,32 @@ void setup() {
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
 
-  // NUKE GHOST DATA ON STARTUP
-  Serial.println("Wiping ghost data from Firebase...");
+  Serial.println("\n[SYSTEM STARTUP] Wiping ghost data from Firebase...");
   Firebase.setString(fbdo, "/slot_names/A1", " ");
   Firebase.setString(fbdo, "/slot_names/A2", " ");
   Firebase.setString(fbdo, "/slot_names/A3", " ");
 
+  // EXPLICIT SPI BUS CLEARING FOR RFID SWAP
   pinMode(ENTRY_SS, OUTPUT); pinMode(EXIT_SS, OUTPUT);
   digitalWrite(ENTRY_SS, HIGH); digitalWrite(EXIT_SS, HIGH);  
-  rfidEntry.PCD_Init(); rfidExit.PCD_Init();
+  
+  Serial.println("[SYSTEM STARTUP] Booting Entry RFID on Pin 4...");
+  rfidEntry.PCD_Init(); 
+  delay(50); // Pause to let the bus settle
+  
+  Serial.println("[SYSTEM STARTUP] Booting Exit RFID on Pin 5...");
+  rfidExit.PCD_Init();
 
+  // EXPLICIT SERVO 0-DEGREE STARTUP
+  Serial.println("[SYSTEM STARTUP] Snapping Servos to 0 Degrees...");
   ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
   entryGate.setPeriodHertz(50); exitGate.setPeriodHertz(50);
-  entryGate.attach(ENTRY_SERVO, 500, 2400); entryGate.write(0); 
-  exitGate.attach(EXIT_SERVO, 500, 2400); exitGate.write(0);  
+  entryGate.attach(ENTRY_SERVO, 500, 2400); 
+  exitGate.attach(EXIT_SERVO, 500, 2400); 
+  
+  entryGate.write(0); 
+  exitGate.write(0); 
+  delay(500); 
 
   lcd.init(); lcd.backlight();
   lcd.setCursor(0, 0); lcd.print(" SMART PARKING  ");
@@ -227,6 +238,8 @@ void setup() {
   tcaselect(0); sensor1.begin(); sensor1.setMeasurementTimingBudgetMicroSeconds(20000);
   tcaselect(1); sensor2.begin(); sensor2.setMeasurementTimingBudgetMicroSeconds(20000);
   tcaselect(2); sensor3.begin(); sensor3.setMeasurementTimingBudgetMicroSeconds(20000);
+  
+  Serial.println("[SYSTEM STARTUP] All systems nominal. Waiting for card scan.");
 }
 
 void loop() {
@@ -236,9 +249,13 @@ void loop() {
   pollReservations(currentMillis);
 
   // ==========================================
-  // ENTRY GATE LOGIC
+  // ENTRY GATE LOGIC (PIN 4 RFID -> PIN 26 SERVO)
   // ==========================================
   if (rfidEntry.PICC_IsNewCardPresent() && rfidEntry.PICC_ReadCardSerial()) {
+    Serial.println("\n=============================================");
+    Serial.println(" ENTRY RFID TRIGGERED (Reading from Pin 4)");
+    Serial.println("=============================================");
+    
     String rawUID = getRawUID(rfidEntry);
     String mappedID = getMappedID(rawUID);
     
@@ -307,6 +324,7 @@ void loop() {
           Firebase.setString(fbdo, "/slots/" + assignedSlotStr, "Expecting");
           Firebase.setString(fbdo, "/slot_names/" + assignedSlotStr, mappedID); 
           
+          Serial.println(" SENDING COMMAND TO ENTRY SERVO (Pin 26)");
           entryGate.write(45);
           isEntryGateOpen = true;
           entryGateTimer = currentMillis; 
@@ -320,6 +338,7 @@ void loop() {
   }
 
   if (isEntryGateOpen && (currentMillis - entryGateTimer >= 7000)) {
+    Serial.println(" CLOSING ENTRY SERVO (Pin 26)");
     entryGate.write(0); isEntryGateOpen = false;
     lcd.clear(); lcd.setCursor(0, 0); lcd.print(" SMART PARKING  ");
     lcd.setCursor(0, 1); lcd.print(" PLEASE SCAN IN ");
@@ -330,9 +349,13 @@ void loop() {
   }
 
   // ==========================================
-  // EXIT GATE LOGIC
+  // EXIT GATE LOGIC (PIN 5 RFID -> PIN 25 SERVO)
   // ==========================================
   if (exitGateState == 0 && rfidExit.PICC_IsNewCardPresent() && rfidExit.PICC_ReadCardSerial()) {
+    Serial.println("\n=============================================");
+    Serial.println(" EXIT RFID TRIGGERED (Reading from Pin 5)");
+    Serial.println("=============================================");
+    
     String rawUID = getRawUID(rfidExit);
     String mappedID = getMappedID(rawUID);
     
@@ -382,6 +405,7 @@ void loop() {
   }
 
   if (exitGateState == 1 && (currentMillis - exitGateTimer >= 7000)) {
+    Serial.println(" SENDING COMMAND TO EXIT SERVO (Pin 25)");
     exitGate.write(45); 
     exitGateState = 2; 
     exitGateTimer = currentMillis; 
@@ -389,11 +413,11 @@ void loop() {
   
   // EXIT GATE CLOSES AND WIPES ID
   else if (exitGateState == 2 && (currentMillis - exitGateTimer >= 7000)) {
+    Serial.println(" CLOSING EXIT SERVO (Pin 25)");
     exitGate.write(0); 
     exitGateState = 0; 
     
     if (exitingSlot != "") {
-      // Using a space here physically overwrites the old ghost text
       Firebase.setString(fbdo, "/slot_names/" + exitingSlot, " "); 
       
       int slotIndex = exitingSlot.charAt(1) - '1'; 
