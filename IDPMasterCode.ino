@@ -106,47 +106,60 @@ void handleToFSensors(unsigned long currentMillis) {
   VL53L0X_RangingMeasurementData_t measure;
   
   for (int i = 0; i < 3; i++) {
+    
+    // NEW ROUTING: Swapped A1 and A3 back to sequential order
     if (i == 0) {
-      tcaselect(2); 
-      sensor3.rangingTest(&measure, false);
+      tcaselect(0); 
+      sensor1.rangingTest(&measure, false);
     } 
     else if (i == 1) {
       tcaselect(1); 
       sensor2.rangingTest(&measure, false);
     } 
     else if (i == 2) {
-      tcaselect(0); 
-      sensor1.rangingTest(&measure, false);
+      tcaselect(2); 
+      sensor3.rangingTest(&measure, false);
     }
 
-    bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < 900 && measure.RangeMilliMeter > 10);
+    // ::: DYNAMIC THRESHOLD LOGIC :::
+    int currentThreshold = 900; // Default fallback
+    if (i == 0) currentThreshold = 28;       // Slot A1 (Now at the 28mm physical location)
+    else if (i == 1) currentThreshold = 50;  // Slot A2
+    else if (i == 2) currentThreshold = 50;  // Slot A3 (Now at the 50mm physical location)
+
+    bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < currentThreshold && measure.RangeMilliMeter > 10);
     String slotStr = "A" + String(i + 1);
 
+    // 1. CAR PARKS
     if (obstacleDetected) {
       if (slotStates[i] == FREE || slotStates[i] == EXPECTING_CAR) {
         slotStates[i] = OCCUPIED;
-        strip.setPixelColor(i, strip.Color(255, 0, 0)); 
+        strip.setPixelColor(i, strip.Color(255, 0, 0)); // RED
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Occupied");
       }
     }
+    
+    // 2. CAR LEAVES PHYSICAL SLOT
     else if (!obstacleDetected) {
       if (slotStates[i] == OCCUPIED) {
         slotStates[i] = FREE;
         assignedUsers[i] = ""; 
-        strip.setPixelColor(i, strip.Color(0, 255, 0)); 
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
       }
     }
 
+    // 3. RESERVATION TIMEOUT (15s rule)
     if (slotStates[i] == RESERVED) {
       if (currentMillis - reserveTimers[i] >= 15000) {
         slotStates[i] = FREE;
         assignedUsers[i] = ""; 
-        strip.setPixelColor(i, strip.Color(0, 255, 0)); 
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
+        // Using a space bypasses the empty string upload bug
         Firebase.setString(fbdo, "/slot_names/" + slotStr, " "); 
       }
     }
@@ -167,7 +180,7 @@ void pollReservations(unsigned long currentMillis) {
           Firebase.getString(fbdo, "/slot_names/" + slotStr);
           assignedUsers[currentPollSlot] = fbdo.stringData();
           
-          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); 
+          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); // BLUE
           strip.show();
         }
       }
