@@ -30,10 +30,24 @@
             padding: 20px;
         }
 
-        .container { max-width: 900px; margin: 0 auto; padding-bottom: 40px; }
+        .container { max-width: 900px; margin: 0 auto; padding-bottom: 40px; position: relative; }
 
-        header { text-align: center; margin-bottom: 30px; padding: 20px 0; border-bottom: 2px solid var(--bg-surface); }
+        header { text-align: center; margin-bottom: 30px; padding: 20px 0; border-bottom: 2px solid var(--bg-surface); position: relative; }
         header h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 10px; }
+
+        .admin-btn {
+            position: absolute;
+            top: 20px;
+            right: 0;
+            background-color: var(--text-muted);
+            color: var(--bg-base);
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .admin-btn:hover { background-color: var(--text-main); }
 
         .counter-badge {
             display: inline-block;
@@ -84,7 +98,7 @@
             border-radius: 6px;
             cursor: pointer;
             font-weight: bold;
-            display: none; /* Strictly controlled by JavaScript now */
+            display: none; 
             margin-top: 5px;
         }
 
@@ -109,12 +123,38 @@
         .receipt-card .fee { font-size: 2.5rem; font-weight: bold; color: var(--color-occupied); margin: 10px 0; }
         .receipt-card .details { font-size: 1.1rem; color: var(--text-muted); line-height: 1.8; }
         .empty-receipt { text-align: center; color: var(--text-muted); font-style: italic; font-size: 1.1rem; }
+
+        /* Admin Modal Styling */
+        .modal {
+            display: none; 
+            position: fixed; z-index: 100; left: 0; top: 0;
+            width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background-color: var(--bg-surface);
+            margin: 15% auto; padding: 20px;
+            border-radius: var(--border-radius);
+            width: 300px; text-align: center;
+            box-shadow: var(--shadow);
+        }
+        .modal-content input[type="time"] {
+            margin: 10px 0 20px 0; padding: 8px; width: 80%;
+            border: 1px solid var(--text-muted); border-radius: 4px;
+        }
+        .modal-content button {
+            padding: 8px 15px; margin: 5px; border: none; border-radius: 4px;
+            cursor: pointer; font-weight: bold;
+        }
+        .btn-save { background-color: var(--color-free); color: white; }
+        .btn-cancel { background-color: var(--color-occupied); color: white; }
     </style>
 </head>
 <body>
 
     <div class="container">
         <header>
+            <button class="admin-btn" onclick="requestAdmin()">Admin Panel</button>
             <h1>IoT+ Smart Parking Management System</h1>
             <div id="available-counter" class="counter-badge">Calculating Slots...</div>
         </header>
@@ -151,6 +191,18 @@
         </section>
     </div>
 
+    <div id="adminModal" class="modal">
+        <div class="modal-content">
+            <h3>Set Peak Hours</h3>
+            <label>Start Time:</label><br>
+            <input type="time" id="peakStartInput"><br>
+            <label>End Time:</label><br>
+            <input type="time" id="peakEndInput"><br>
+            <button class="btn-save" onclick="savePeakHours()">Save Config</button>
+            <button class="btn-cancel" onclick="closeAdmin()">Cancel</button>
+        </div>
+    </div>
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
         import { getDatabase, ref, onValue, set, onChildChanged } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-database.js";
@@ -164,6 +216,41 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
+        // -- ADMIN PANEL LOGIC --
+        let currentPeakStart = "";
+        let currentPeakEnd = "";
+
+        onValue(ref(db, 'config'), (snapshot) => {
+            const data = snapshot.val() || {};
+            currentPeakStart = data.peak_start || "";
+            currentPeakEnd = data.peak_end || "";
+        });
+
+        window.requestAdmin = function() {
+            let pwd = prompt("Enter Admin Password:");
+            if (pwd === "0032") {
+                document.getElementById("peakStartInput").value = currentPeakStart;
+                document.getElementById("peakEndInput").value = currentPeakEnd;
+                document.getElementById("adminModal").style.display = "block";
+            } else if (pwd !== null) {
+                alert("Incorrect Password!");
+            }
+        };
+
+        window.closeAdmin = function() {
+            document.getElementById("adminModal").style.display = "none";
+        };
+
+        window.savePeakHours = function() {
+            let start = document.getElementById("peakStartInput").value;
+            let end = document.getElementById("peakEndInput").value;
+            set(ref(db, 'config/peak_start'), start);
+            set(ref(db, 'config/peak_end'), end);
+            alert("Peak Hours Updated Successfully!");
+            closeAdmin();
+        };
+
+        // -- RESERVATION LOGIC --
         window.triggerReservation = function(slotId) {
             let code = prompt("Enter User Code (e.g., 001 or 002):", "001");
             if (code === "001" || code === "002") {
@@ -179,11 +266,9 @@
         const slotsRef = ref(db, 'slots');
         const namesRef = ref(db, 'slot_names');
         
-        // Data storage for unified UI updates
         let currentSlots = {};
         let currentNames = {};
 
-        // Unified rendering function ensuring button only shows when truly ready
         function updateDashboard() {
             let freeCount = 0;
 
@@ -196,35 +281,25 @@
                 const nameEl = document.getElementById('name-' + slotId);
                 const btnEl = cardEl.querySelector('.reserve-btn');
 
-                // Update text and CSS colors
                 statusEl.innerText = status;
                 cardEl.className = 'slot-card ' + status.toLowerCase();
                 nameEl.innerText = assignedName;
 
-                // STRICT LOGIC: The slot must be physically "Free" AND completely wiped of the driver's ID.
                 if (status === "Free" && assignedName === "") {
                     freeCount++;
-                    btnEl.style.display = "inline-block"; // Show button
+                    btnEl.style.display = "inline-block"; 
                 } else {
-                    btnEl.style.display = "none"; // Hide button
+                    btnEl.style.display = "none"; 
                 }
             });
 
             document.getElementById('available-counter').innerText = `${freeCount} / 3 Slots Available`;
         }
 
-        // Firebase Listeners trigger the unified update
-        onValue(slotsRef, (snapshot) => {
-            currentSlots = snapshot.val() || {};
-            updateDashboard();
-        });
+        onValue(slotsRef, (snapshot) => { currentSlots = snapshot.val() || {}; updateDashboard(); });
+        onValue(namesRef, (snapshot) => { currentNames = snapshot.val() || {}; updateDashboard(); });
 
-        onValue(namesRef, (snapshot) => {
-            currentNames = snapshot.val() || {};
-            updateDashboard();
-        });
-
-        // Checkout Receipt Logic
+        // -- RECEIPT LOGIC --
         const usersRef = ref(db, 'users');
         const receiptEl = document.getElementById('checkout-receipt');
 
@@ -236,9 +311,11 @@
                 const dur = parseInt(data.last_duration || 0);
                 const durFee = parseInt(data.duration_fee || 0);
                 const resFee = parseInt(data.res_fee || 0);
+                const peakFee = parseInt(data.peak_fee || 0);
                 const totalFee = parseInt(data.last_fee || 0);
                 
                 let resHtml = resFee > 0 ? `<br>Reservation Charge: Rs. ${resFee}` : "";
+                let peakHtml = peakFee > 0 ? `<br>Peak Time Charge (15%): Rs. ${peakFee}` : "";
 
                 receiptEl.innerHTML = `
                     <div class="rfid">Assigned ID: <strong>${uid}</strong></div>
@@ -247,6 +324,7 @@
                         Total Duration: ${dur} seconds<br>
                         Duration Fee: Rs. ${durFee}
                         ${resHtml}
+                        ${peakHtml}
                     </div>
                 `;
             }

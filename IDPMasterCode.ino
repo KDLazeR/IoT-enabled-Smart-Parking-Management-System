@@ -8,6 +8,7 @@
 #include "Adafruit_VL53L0X.h"
 #include <Adafruit_NeoPixel.h>
 #include <U8g2lib.h>
+#include <time.h> // NEW: Internet Time
 
 // ::: WIFI & FIREBASE CREDENTIALS :::
 #define WIFI_SSID "Kanchana’s iPhone"     
@@ -67,10 +68,16 @@ unsigned long reserveTimers[3] = {0, 0, 0};
 unsigned long lastFbPoll = 0;
 int currentPollSlot = 0;
 
+// ::: CONFIG POLING VARIABLES :::
+unsigned long lastConfigPoll = 0;
+int peakStartMins = -1; 
+int peakEndMins = -1;
+
 struct ParkSession {
   String uid;
   String slotName; 
   unsigned long startTime;
+  bool isPeak; // NEW: Peak time flag
   bool isActive;
 };
 ParkSession sessions[10];
@@ -101,6 +108,25 @@ String getRawUID(MFRC522 &reader) {
   return uidString;
 }
 
+// ::: BULLETPROOF FIREBASE PEAK TIME POLING :::
+void pollConfig(unsigned long currentMillis) {
+  if (currentMillis - lastConfigPoll >= 30000 || lastConfigPoll == 0) {
+    lastConfigPoll = currentMillis;
+    if (Firebase.getString(fbdo, "/config/peak_start")) {
+      String s = fbdo.stringData();
+      s.replace("\"", ""); // STRIP QUOTATIONS
+      int sep = s.indexOf(':');
+      if(sep != -1) peakStartMins = s.substring(0, sep).toInt() * 60 + s.substring(sep + 1).toInt();
+    }
+    if (Firebase.getString(fbdo, "/config/peak_end")) {
+      String e = fbdo.stringData();
+      e.replace("\"", ""); // STRIP QUOTATIONS
+      int sep = e.indexOf(':');
+      if(sep != -1) peakEndMins = e.substring(0, sep).toInt() * 60 + e.substring(sep + 1).toInt();
+    }
+  }
+}
+
 // FAST DETECTION ToF Sensor Logic
 void handleToFSensors(unsigned long currentMillis) {
   VL53L0X_RangingMeasurementData_t measure;
@@ -121,11 +147,8 @@ void handleToFSensors(unsigned long currentMillis) {
       sensor3.rangingTest(&measure, false);
     }
 
-    // ::: DYNAMIC THRESHOLD LOGIC :::
-    int currentThreshold = 900; // Default fallback
-    if (i == 0) currentThreshold = 28;       // Slot A1 (Now at the 28mm physical location)
-    else if (i == 1) currentThreshold = 50;  // Slot A2
-    else if (i == 2) currentThreshold = 50;  // Slot A3 (Now at the 50mm physical location)
+    // ::: UNIFIED THRESHOLD LOGIC :::
+    int currentThreshold = 60; // Unified 60mm threshold for all slots
 
     bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < currentThreshold && measure.RangeMilliMeter > 10);
     String slotStr = "A" + String(i + 1);
@@ -199,6 +222,16 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) { delay(500); }
   
+  // ::: FORCE NTP TIME SYNC BLOCK :::
+  Serial.print("\n[SYSTEM STARTUP] Syncing Sri Lanka Time (UTC+5:30) from network...");
+  configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
+  struct tm timeinfo;
+  while (!getLocalTime(&timeinfo)) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\n[SYSTEM STARTUP] Time Synchronized successfully!");
+
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
   config.signer.test_mode = true; 
@@ -260,6 +293,7 @@ void loop() {
 
   handleToFSensors(currentMillis);
   pollReservations(currentMillis);
+  pollConfig(currentMillis);
 
   // ==========================================
   // ENTRY GATE LOGIC (PIN 4 RFID -> PIN 26 SERVO)
@@ -323,11 +357,27 @@ void loop() {
         else {
           assignedSlotStr = "A" + String(assignedIndex + 1);
 
+          // ::: PEAK HOUR DETERMINATION :::
+          bool isPeakTimeEntry = false;
+          struct tm timeinfo;
+          if (getLocalTime(&timeinfo)) {
+            int currentMins = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+            if (peakStartMins != -1 && peakEndMins != -1 && currentMins >= peakStartMins && currentMins <= peakEndMins) {
+              isPeakTimeEntry = true;
+            }
+            Serial.printf(" Current Time: %02d:%02d (%d mins)\n", timeinfo.tm_hour, timeinfo.tm_min, currentMins);
+            Serial.printf(" Peak Range: %d to %d mins\n", peakStartMins, peakEndMins);
+            Serial.printf(" Is Peak Active? %s\n", isPeakTimeEntry ? "YES" : "NO");
+          } else {
+            Serial.println(" Failed to read NTP time!");
+          }
+
           for (int i = 0; i < 10; i++) {
             if (!sessions[i].isActive) {
               sessions[i].uid = mappedID;
               sessions[i].slotName = assignedSlotStr; 
               sessions[i].startTime = currentMillis;
+              sessions[i].isPeak = isPeakTimeEntry; // Lock in the peak flag
               sessions[i].isActive = true;
               break;
             }
@@ -382,14 +432,23 @@ void loop() {
         float rawTimeSeconds = (currentMillis - sessions[i].startTime) / 1000.0;
         int roundedSeconds = round(rawTimeSeconds); 
         
+        // Base Charges
         int durationFee = roundedSeconds * 5; 
         int resFee = mappedID.startsWith("RES") ? 10 : 0;
-        int totalFee = durationFee + resFee;
+        
+        // ::: PEAK TARIFF CALCULATION :::
+        int peakFee = 0;
+        if (sessions[i].isPeak) {
+          peakFee = round(durationFee * 0.15); // Applies 15% ONLY to base duration cost
+        }
+
+        int totalFee = durationFee + resFee + peakFee;
         
         Firebase.setString(fbdo, "/users/" + mappedID + "/status", "Left");
         Firebase.setInt(fbdo, "/users/" + mappedID + "/last_duration", roundedSeconds);
         Firebase.setInt(fbdo, "/users/" + mappedID + "/duration_fee", durationFee);
         Firebase.setInt(fbdo, "/users/" + mappedID + "/res_fee", resFee);
+        Firebase.setInt(fbdo, "/users/" + mappedID + "/peak_fee", peakFee); // Pushed to DB
         Firebase.setInt(fbdo, "/users/" + mappedID + "/last_fee", totalFee);
 
         u8g2.clearBuffer();          
@@ -401,6 +460,7 @@ void loop() {
         String durText = "Duration: " + String(roundedSeconds) + "s";
         u8g2.drawStr(0, 38, durText.c_str());
 
+        // Final total displayed on OLED
         u8g2.setFont(u8g2_font_ncenB14_tr); 
         String feeText = "Fee: Rs." + String(totalFee);
         u8g2.drawStr(0, 62, feeText.c_str());
