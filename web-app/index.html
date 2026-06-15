@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Parking Dashboard</title>
+    
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Smart Park">
+    <meta name="theme-color" content="#fdf6e3">
+
     <style>
         :root {
             --bg-base: #fdf6e3;         
@@ -27,27 +33,27 @@
             background-color: var(--bg-base);
             color: var(--text-main);
             line-height: 1.6;
-            padding: 20px;
+            padding: 40px 20px 20px 20px; 
+            -webkit-user-select: none; 
+            overflow-x: hidden; /* Prevents sideways scrolling when sidebar is hidden */
         }
 
         .container { max-width: 900px; margin: 0 auto; padding-bottom: 40px; position: relative; }
 
         header { text-align: center; margin-bottom: 30px; padding: 20px 0; border-bottom: 2px solid var(--bg-surface); position: relative; }
-        header h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 10px; }
+        header h1 { font-size: 1.8rem; font-weight: 600; margin-bottom: 10px; padding: 0 30px; }
 
-        .admin-btn {
+        /* HAMBURGER MENU ICON */
+        .menu-icon {
             position: absolute;
-            top: 20px;
-            right: 0;
-            background-color: var(--text-muted);
-            color: var(--bg-base);
-            border: none;
-            padding: 6px 12px;
-            border-radius: 6px;
+            top: 15px;
+            right: 10px;
+            font-size: 2rem;
             cursor: pointer;
-            font-weight: bold;
+            color: var(--text-main);
+            z-index: 10;
+            padding: 5px;
         }
-        .admin-btn:hover { background-color: var(--text-main); }
 
         .counter-badge {
             display: inline-block;
@@ -124,6 +130,61 @@
         .receipt-card .details { font-size: 1.1rem; color: var(--text-muted); line-height: 1.8; }
         .empty-receipt { text-align: center; color: var(--text-muted); font-style: italic; font-size: 1.1rem; }
 
+        /* ::: SIDEBAR & OVERLAY STYLES ::: */
+        .sidebar-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 40;
+            display: none; /* Hidden by default */
+            opacity: 0;
+            transition: opacity var(--transition-speed) ease;
+        }
+        .sidebar-overlay.active {
+            display: block;
+            opacity: 1;
+        }
+
+        .sidebar {
+            position: fixed;
+            top: 0; right: -280px; /* Hidden off-screen to the right */
+            width: 260px; height: 100%;
+            background-color: var(--bg-surface);
+            box-shadow: -4px 0 15px rgba(0,0,0,0.2);
+            z-index: 50;
+            padding: 30px 20px;
+            transition: right var(--transition-speed) ease;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .sidebar.active {
+            right: 0; /* Slides in */
+        }
+        .sidebar .close-btn {
+            align-self: flex-end;
+            font-size: 2.5rem;
+            cursor: pointer;
+            color: var(--text-muted);
+            line-height: 0.8;
+            margin-bottom: 10px;
+        }
+        .sidebar h2 { margin: 0; border-bottom: 2px solid var(--bg-base); padding-bottom: 10px; }
+        
+        .admin-btn {
+            width: 100%;
+            background-color: var(--text-muted);
+            color: var(--bg-base);
+            border: none;
+            padding: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 1.1rem;
+            transition: background-color var(--transition-speed) ease;
+        }
+        .admin-btn:hover { background-color: var(--text-main); }
+
         /* Admin Modal Styling */
         .modal {
             display: none; 
@@ -133,18 +194,18 @@
         }
         .modal-content {
             background-color: var(--bg-surface);
-            margin: 15% auto; padding: 20px;
+            margin: 30% auto; padding: 25px;
             border-radius: var(--border-radius);
-            width: 300px; text-align: center;
+            width: 320px; text-align: center;
             box-shadow: var(--shadow);
         }
         .modal-content input[type="time"] {
-            margin: 10px 0 20px 0; padding: 8px; width: 80%;
-            border: 1px solid var(--text-muted); border-radius: 4px;
+            margin: 10px 0 20px 0; padding: 10px; width: 85%;
+            border: 1px solid var(--text-muted); border-radius: 4px; font-size: 1rem;
         }
         .modal-content button {
-            padding: 8px 15px; margin: 5px; border: none; border-radius: 4px;
-            cursor: pointer; font-weight: bold;
+            padding: 10px 20px; margin: 5px; border: none; border-radius: 4px;
+            cursor: pointer; font-weight: bold; font-size: 1rem;
         }
         .btn-save { background-color: var(--color-free); color: white; }
         .btn-cancel { background-color: var(--color-occupied); color: white; }
@@ -154,7 +215,8 @@
 
     <div class="container">
         <header>
-            <button class="admin-btn" onclick="requestAdmin()">Admin Panel</button>
+            <div class="menu-icon" onclick="openSidebar()">&#9776;</div>
+            
             <h1>IoT+ Smart Parking Management System</h1>
             <div id="available-counter" class="counter-badge">Calculating Slots...</div>
         </header>
@@ -191,6 +253,13 @@
         </section>
     </div>
 
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+    <div class="sidebar" id="adminSidebar">
+        <div class="close-btn" onclick="closeSidebar()">&times;</div>
+        <h2>Settings</h2>
+        <button class="admin-btn" onclick="requestAdmin()">Admin Panel</button>
+    </div>
+
     <div id="adminModal" class="modal">
         <div class="modal-content">
             <h3>Set Peak Hours</h3>
@@ -198,7 +267,7 @@
             <input type="time" id="peakStartInput"><br>
             <label>End Time:</label><br>
             <input type="time" id="peakEndInput"><br>
-            <button class="btn-save" onclick="savePeakHours()">Save Config</button>
+            <button class="btn-save" onclick="savePeakHours()">Save</button>
             <button class="btn-cancel" onclick="closeAdmin()">Cancel</button>
         </div>
     </div>
@@ -216,6 +285,17 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
+        // -- SIDEBAR LOGIC --
+        window.openSidebar = function() {
+            document.getElementById('adminSidebar').classList.add('active');
+            document.getElementById('sidebarOverlay').classList.add('active');
+        };
+
+        window.closeSidebar = function() {
+            document.getElementById('adminSidebar').classList.remove('active');
+            document.getElementById('sidebarOverlay').classList.remove('active');
+        };
+
         // -- ADMIN PANEL LOGIC --
         let currentPeakStart = "";
         let currentPeakEnd = "";
@@ -227,6 +307,7 @@
         });
 
         window.requestAdmin = function() {
+            closeSidebar(); // Close the sidebar so it's not behind the modal
             let pwd = prompt("Enter Admin Password:");
             if (pwd === "0032") {
                 document.getElementById("peakStartInput").value = currentPeakStart;
