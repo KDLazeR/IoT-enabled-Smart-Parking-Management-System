@@ -8,7 +8,7 @@
 #include "Adafruit_VL53L0X.h"
 #include <Adafruit_NeoPixel.h>
 #include <U8g2lib.h>
-#include <time.h> // NEW: Internet Time
+#include <time.h> 
 
 // ::: WIFI & FIREBASE CREDENTIALS :::
 #define WIFI_SSID "Kanchana’s iPhone"     
@@ -21,12 +21,10 @@ FirebaseAuth auth;
 FirebaseConfig config;
 
 // ::: EXPLICIT NEW PIN DEFINITIONS :::
-// The Old Exit is now the New Entry
 #define ENTRY_SS 4       
 #define ENTRY_RST 17     
 #define ENTRY_SERVO 26   
 
-// The Old Entry is now the New Exit
 #define EXIT_SS 5        
 #define EXIT_RST 16      
 #define EXIT_SERVO 25    
@@ -43,7 +41,6 @@ Servo exitGate;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-// UPSIDE DOWN OLED APPLIED (U8G2_R2)
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, U8X8_PIN_NONE);
 
 Adafruit_VL53L0X sensor1 = Adafruit_VL53L0X();
@@ -59,25 +56,25 @@ unsigned long exitGateTimer = 0;
 int exitGateState = 0; 
 String exitingSlot = ""; 
 
+unsigned long lastFbPoll = 0;
+int currentPollSlot = 0;
+
+// ::: REAL-TIME CONFIG VARIABLES :::
+unsigned long lastConfigPoll = 0;
+int peakStartMins = -1; 
+int peakEndMins = -1;
+
 // ::: SLOT STATE MACHINE :::
 enum SlotState { FREE, RESERVED, EXPECTING_CAR, OCCUPIED };
 SlotState slotStates[3] = {FREE, FREE, FREE};
 String assignedUsers[3] = {"", "", ""};
 unsigned long reserveTimers[3] = {0, 0, 0};
 
-unsigned long lastFbPoll = 0;
-int currentPollSlot = 0;
-
-// ::: CONFIG POLING VARIABLES :::
-unsigned long lastConfigPoll = 0;
-int peakStartMins = -1; 
-int peakEndMins = -1;
-
 struct ParkSession {
   String uid;
   String slotName; 
   unsigned long startTime;
-  bool isPeak; // NEW: Peak time flag
+  bool isPeak; 
   bool isActive;
 };
 ParkSession sessions[10];
@@ -108,21 +105,33 @@ String getRawUID(MFRC522 &reader) {
   return uidString;
 }
 
-// ::: BULLETPROOF FIREBASE PEAK TIME POLING :::
+// ::: UPGRADED REAL-TIME FIREBASE POLLING (5 SECONDS) :::
 void pollConfig(unsigned long currentMillis) {
-  if (currentMillis - lastConfigPoll >= 30000 || lastConfigPoll == 0) {
+  // Changed from 30000ms to 5000ms for fast demonstration updates
+  if (currentMillis - lastConfigPoll >= 5000 || lastConfigPoll == 0) {
     lastConfigPoll = currentMillis;
+    
+    int newStart = peakStartMins;
+    int newEnd = peakEndMins;
+
     if (Firebase.getString(fbdo, "/config/peak_start")) {
       String s = fbdo.stringData();
-      s.replace("\"", ""); // STRIP QUOTATIONS
+      s.replace("\"", ""); 
       int sep = s.indexOf(':');
-      if(sep != -1) peakStartMins = s.substring(0, sep).toInt() * 60 + s.substring(sep + 1).toInt();
+      if(sep != -1) newStart = s.substring(0, sep).toInt() * 60 + s.substring(sep + 1).toInt();
     }
     if (Firebase.getString(fbdo, "/config/peak_end")) {
       String e = fbdo.stringData();
-      e.replace("\"", ""); // STRIP QUOTATIONS
+      e.replace("\"", ""); 
       int sep = e.indexOf(':');
-      if(sep != -1) peakEndMins = e.substring(0, sep).toInt() * 60 + e.substring(sep + 1).toInt();
+      if(sep != -1) newEnd = e.substring(0, sep).toInt() * 60 + e.substring(sep + 1).toInt();
+    }
+
+    // Print to serial monitor only if the admin panel values actually changed
+    if (newStart != peakStartMins || newEnd != peakEndMins) {
+      peakStartMins = newStart;
+      peakEndMins = newEnd;
+      Serial.println("\n [ADMIN OVERRIDE] New Peak Hours Received from Web App!");
     }
   }
 }
@@ -133,7 +142,6 @@ void handleToFSensors(unsigned long currentMillis) {
   
   for (int i = 0; i < 3; i++) {
     
-    // NEW ROUTING: Swapped A1 and A3 back to sequential order
     if (i == 0) {
       tcaselect(0); 
       sensor1.rangingTest(&measure, false);
@@ -147,42 +155,36 @@ void handleToFSensors(unsigned long currentMillis) {
       sensor3.rangingTest(&measure, false);
     }
 
-    // ::: UNIFIED THRESHOLD LOGIC :::
-    int currentThreshold = 60; // Unified 60mm threshold for all slots
+    int currentThreshold = 60; 
 
     bool obstacleDetected = (measure.RangeStatus != 4 && measure.RangeMilliMeter < currentThreshold && measure.RangeMilliMeter > 10);
     String slotStr = "A" + String(i + 1);
 
-    // 1. CAR PARKS
     if (obstacleDetected) {
       if (slotStates[i] == FREE || slotStates[i] == EXPECTING_CAR) {
         slotStates[i] = OCCUPIED;
-        strip.setPixelColor(i, strip.Color(255, 0, 0)); // RED
+        strip.setPixelColor(i, strip.Color(255, 0, 0)); 
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Occupied");
       }
     }
-    
-    // 2. CAR LEAVES PHYSICAL SLOT
     else if (!obstacleDetected) {
       if (slotStates[i] == OCCUPIED) {
         slotStates[i] = FREE;
         assignedUsers[i] = ""; 
-        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); 
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
       }
     }
 
-    // 3. RESERVATION TIMEOUT (15s rule)
     if (slotStates[i] == RESERVED) {
       if (currentMillis - reserveTimers[i] >= 15000) {
         slotStates[i] = FREE;
         assignedUsers[i] = ""; 
-        strip.setPixelColor(i, strip.Color(0, 255, 0)); // GREEN
+        strip.setPixelColor(i, strip.Color(0, 255, 0)); 
         strip.show();
         Firebase.setString(fbdo, "/slots/" + slotStr, "Free");
-        // Using a space bypasses the empty string upload bug
         Firebase.setString(fbdo, "/slot_names/" + slotStr, " "); 
       }
     }
@@ -203,7 +205,7 @@ void pollReservations(unsigned long currentMillis) {
           Firebase.getString(fbdo, "/slot_names/" + slotStr);
           assignedUsers[currentPollSlot] = fbdo.stringData();
           
-          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); // BLUE
+          strip.setPixelColor(currentPollSlot, strip.Color(0, 0, 255)); 
           strip.show();
         }
       }
@@ -222,7 +224,6 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) { delay(500); }
   
-  // ::: FORCE NTP TIME SYNC BLOCK :::
   Serial.print("\n[SYSTEM STARTUP] Syncing Sri Lanka Time (UTC+5:30) from network...");
   configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
   struct tm timeinfo;
@@ -243,18 +244,16 @@ void setup() {
   Firebase.setString(fbdo, "/slot_names/A2", " ");
   Firebase.setString(fbdo, "/slot_names/A3", " ");
 
-  // EXPLICIT SPI BUS CLEARING FOR RFID SWAP
   pinMode(ENTRY_SS, OUTPUT); pinMode(EXIT_SS, OUTPUT);
   digitalWrite(ENTRY_SS, HIGH); digitalWrite(EXIT_SS, HIGH);  
   
   Serial.println("[SYSTEM STARTUP] Booting Entry RFID on Pin 4...");
   rfidEntry.PCD_Init(); 
-  delay(50); // Pause to let the bus settle
+  delay(50); 
   
   Serial.println("[SYSTEM STARTUP] Booting Exit RFID on Pin 5...");
   rfidExit.PCD_Init();
 
-  // EXPLICIT SERVO 0-DEGREE STARTUP
   Serial.println("[SYSTEM STARTUP] Snapping Servos to 0 Degrees...");
   ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
   entryGate.setPeriodHertz(50); exitGate.setPeriodHertz(50);
@@ -293,10 +292,10 @@ void loop() {
 
   handleToFSensors(currentMillis);
   pollReservations(currentMillis);
-  pollConfig(currentMillis);
+  pollConfig(currentMillis); 
 
   // ==========================================
-  // ENTRY GATE LOGIC (PIN 4 RFID -> PIN 26 SERVO)
+  // ENTRY GATE LOGIC
   // ==========================================
   if (rfidEntry.PICC_IsNewCardPresent() && rfidEntry.PICC_ReadCardSerial()) {
     Serial.println("\n=============================================");
@@ -357,7 +356,6 @@ void loop() {
         else {
           assignedSlotStr = "A" + String(assignedIndex + 1);
 
-          // ::: PEAK HOUR DETERMINATION :::
           bool isPeakTimeEntry = false;
           struct tm timeinfo;
           if (getLocalTime(&timeinfo)) {
@@ -368,8 +366,6 @@ void loop() {
             Serial.printf(" Current Time: %02d:%02d (%d mins)\n", timeinfo.tm_hour, timeinfo.tm_min, currentMins);
             Serial.printf(" Peak Range: %d to %d mins\n", peakStartMins, peakEndMins);
             Serial.printf(" Is Peak Active? %s\n", isPeakTimeEntry ? "YES" : "NO");
-          } else {
-            Serial.println(" Failed to read NTP time!");
           }
 
           for (int i = 0; i < 10; i++) {
@@ -377,7 +373,7 @@ void loop() {
               sessions[i].uid = mappedID;
               sessions[i].slotName = assignedSlotStr; 
               sessions[i].startTime = currentMillis;
-              sessions[i].isPeak = isPeakTimeEntry; // Lock in the peak flag
+              sessions[i].isPeak = isPeakTimeEntry; 
               sessions[i].isActive = true;
               break;
             }
@@ -412,7 +408,7 @@ void loop() {
   }
 
   // ==========================================
-  // EXIT GATE LOGIC (PIN 5 RFID -> PIN 25 SERVO)
+  // EXIT GATE LOGIC
   // ==========================================
   if (exitGateState == 0 && rfidExit.PICC_IsNewCardPresent() && rfidExit.PICC_ReadCardSerial()) {
     Serial.println("\n=============================================");
@@ -432,14 +428,12 @@ void loop() {
         float rawTimeSeconds = (currentMillis - sessions[i].startTime) / 1000.0;
         int roundedSeconds = round(rawTimeSeconds); 
         
-        // Base Charges
         int durationFee = roundedSeconds * 5; 
         int resFee = mappedID.startsWith("RES") ? 10 : 0;
         
-        // ::: PEAK TARIFF CALCULATION :::
         int peakFee = 0;
         if (sessions[i].isPeak) {
-          peakFee = round(durationFee * 0.15); // Applies 15% ONLY to base duration cost
+          peakFee = round(durationFee * 0.15); 
         }
 
         int totalFee = durationFee + resFee + peakFee;
@@ -448,7 +442,7 @@ void loop() {
         Firebase.setInt(fbdo, "/users/" + mappedID + "/last_duration", roundedSeconds);
         Firebase.setInt(fbdo, "/users/" + mappedID + "/duration_fee", durationFee);
         Firebase.setInt(fbdo, "/users/" + mappedID + "/res_fee", resFee);
-        Firebase.setInt(fbdo, "/users/" + mappedID + "/peak_fee", peakFee); // Pushed to DB
+        Firebase.setInt(fbdo, "/users/" + mappedID + "/peak_fee", peakFee); 
         Firebase.setInt(fbdo, "/users/" + mappedID + "/last_fee", totalFee);
 
         u8g2.clearBuffer();          
@@ -460,7 +454,6 @@ void loop() {
         String durText = "Duration: " + String(roundedSeconds) + "s";
         u8g2.drawStr(0, 38, durText.c_str());
 
-        // Final total displayed on OLED
         u8g2.setFont(u8g2_font_ncenB14_tr); 
         String feeText = "Fee: Rs." + String(totalFee);
         u8g2.drawStr(0, 62, feeText.c_str());
@@ -484,7 +477,6 @@ void loop() {
     exitGateTimer = currentMillis; 
   }
   
-  // EXIT GATE CLOSES AND WIPES ID
   else if (exitGateState == 2 && (currentMillis - exitGateTimer >= 7000)) {
     Serial.println(" CLOSING EXIT SERVO (Pin 25)");
     exitGate.write(0); 
